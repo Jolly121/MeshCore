@@ -1,6 +1,11 @@
 #include <Arduino.h>   // needed for PlatformIO
 #include <Mesh.h>
 #include "MyMesh.h"
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+
 
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
@@ -87,7 +92,7 @@ static uint32_t _atoi(const char* sp) {
 
 /* GLOBAL OBJECTS */
 #ifdef DISPLAY_CLASS
-  #include "UITask.h"
+  #include "ui-new/UITask.h"
   UITask ui_task(&board, &serial_interface);
 #endif
 
@@ -99,14 +104,50 @@ MyMesh the_mesh(radio_driver, fast_rng, rtc_clock, tables, store
    #endif
 );
 
+int scanTime = 5;          // seconds
+BLEScan *pBLEScan = nullptr;
+unsigned long time_since_last_scan = 0;
+int dBm_cuttoff = -70;   // ignore weak signals, needs to be negative
+
+
 /* END GLOBAL OBJECTS */
 
 void halt() {
   while (1) ;
 }
 
+class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    // Address = the closest thing to a "device ID" you can get without connecting
+    if(advertisedDevice.getRSSI() < dBm_cuttoff) {
+      return; // ignore weak signals
+    }
+    Serial.printf("ID (address): %s  RSSI: %d dBm",
+                  advertisedDevice.getAddress().toString().c_str(),
+                  advertisedDevice.getRSSI());
+
+    if (advertisedDevice.haveName()) {
+      Serial.printf("  Name: %s", advertisedDevice.getName().c_str());
+    }
+
+    Serial.println();
+  }
+};
+
+
 void setup() {
   Serial.begin(115200);
+  Serial.println("Scanning...");
+
+  BLEDevice::init("");
+
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+
+  pBLEScan->setActiveScan(true);   // active scan returns more info (scan response)
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);         // must be <= interval
+
 
   board.begin();
 
@@ -217,11 +258,26 @@ void setup() {
 #endif
 }
 
+void ble_scan_loop(){
+  BLEScanResults foundDevices = pBLEScan->start(scanTime, false);
+
+  Serial.print("Devices found: ");
+  Serial.println(foundDevices.getCount());
+  Serial.println("Scan done!");
+
+  // Clear results to free RAM
+  pBLEScan->clearResults();
+
+  delay(5000);
+
+}
+
 void loop() {
   the_mesh.loop();
   sensors.loop();
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif
+  ble_scan_loop();
   rtc_clock.tick();
 }
